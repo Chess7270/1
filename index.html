@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advanced Chess Game</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f0f0f0;
+      margin: 0;
+      font-family: Arial, sans-serif;
+    }
+
+    #chessboard {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      border: 2px solid black;
+      width: 80vw; /* Set the width to 80% of the screen width */
+      height: 80vw; /* Set the height to match the width (square) */
+      max-width: 640px; /* Max width for larger screens */
+      max-height: 640px; /* Max height for larger screens */
+    }
+
+    .square {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 4vw; /* Use relative font size for better scaling */
+      font-weight: bold;
+      position: relative;
+    }
+
+    .square.light {
+      background-color: #f0d9b5;
+    }
+
+    .square.dark {
+      background-color: #b58863;
+    }
+
+    .square.highlight {
+      background-color: #a9df85;
+    }
+
+    .piece {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #status {
+      margin-top: 20px;
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    #promotion-dialog {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      border: 2px solid black;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .promotion-option {
+      margin: 5px;
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    /* Media Query for smaller screens (phones) */
+    @media (max-width: 600px) {
+      #chessboard {
+        width: 90vw;
+        height: 90vw;
+      }
+      .square {
+        font-size: 8vw; /* Increase the font size on small screens */
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="chessboard"></div>
+  <div id="status"></div>
+  <div id="promotion-dialog">
+    <p>Select a piece for promotion:</p>
+    <div>
+      <span class="promotion-option" data-piece="q">♕</span>
+      <span class="promotion-option" data-piece="r">♖</span>
+      <span class="promotion-option" data-piece="b">♗</span>
+      <span class="promotion-option" data-piece="n">♘</span>
+    </div>
+  </div>
+  <script>
+    const chessboard = document.getElementById('chessboard');
+    const statusDiv = document.getElementById('status');
+    const promotionDialog = document.getElementById('promotion-dialog');
+    let promotionCallback = null;
+
+    const pieceSymbols = {
+      "k": "♚", "q": "♛", "r": "♜", "b": "♝", "n": "♞", "p": "♟",
+      "K": "♔", "Q": "♕", "R": "♖", "B": "♗", "N": "♘", "P": "♙"
+    };
+
+    const initialBoard = [
+      ["r", "n", "b", "q", "k", "b", "n", "r"],
+      ["p", "p", "p", "p", "p", "p", "p", "p"],
+      ["", "", "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["P", "P", "P", "P", "P", "P", "P", "P"],
+      ["R", "N", "B", "Q", "K", "B", "N", "R"]
+    ];
+
+    let currentTurn = "white";
+    let selectedPiece = null;
+    let enPassantTarget = null;
+    let moveHistory = [];
+    const socket = new WebSocket('ws://localhost:8080');
+
+    socket.onopen = () => {
+      console.log("Connected to the server");
+    };
+
+    socket.onmessage = (event) => {
+      const move = JSON.parse(event.data); // Receiving move data from server
+      applyOpponentMove(move);
+    };
+
+    function sendMove(move) {
+      const moveData = JSON.stringify(move);
+      socket.send(moveData); // Send the move to the server
+    }
+
+    function applyOpponentMove(move) {
+      const square = document.querySelector(`[data-row="${move.row}"][data-col="${move.col}"]`);
+      const pieceElement = document.createElement('div');
+      pieceElement.textContent = move.piece;
+      square.appendChild(pieceElement);
+      // Update game state accordingly
+    }
+
+    function createBoard() {
+      chessboard.innerHTML = "";
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+          const square = document.createElement('div');
+          square.classList.add('square', (row + col) % 2 === 0 ? 'light' : 'dark');
+          square.dataset.row = row;
+          square.dataset.col = col;
+
+          const piece = initialBoard[row][col];
+          if (piece) {
+            const pieceElement = document.createElement('div');
+            pieceElement.classList.add('piece');
+            pieceElement.textContent = pieceSymbols[piece];
+            pieceElement.dataset.piece = piece;
+            pieceElement.dataset.color = piece === piece.toUpperCase() ? "white" : "black";
+            square.appendChild(pieceElement);
+          }
+
+          chessboard.appendChild(square);
+        }
+      }
+      updateStatus();
+    }
+
+    function updateStatus() {
+      statusDiv.textContent = `${currentTurn.charAt(0).toUpperCase() + currentTurn.slice(1)}'s turn`;
+    }
+
+    function getPieceAt(row, col) {
+      return [...chessboard.children].find(
+        square => square.dataset.row == row && square.dataset.col == col
+      )?.querySelector(".piece");
+    }
+
+    function clearHighlights() {
+      document.querySelectorAll('.highlight').forEach(square => {
+        square.classList.remove('highlight');
+      });
+    }
+
+    function getValidMoves(piece, row, col) {
+      let validMoves = [];
+
+      // Pawn logic
+      if (piece.toLowerCase() === 'p') {
+        let direction = piece === 'P' ? -1 : 1; // White moves up, Black moves down
+        if (row + direction >= 0 && row + direction < 8 && !initialBoard[row + direction][col]) {
+          validMoves.push({ row: row + direction, col });
+        }
+        if (row + direction >= 0 && row + direction < 8 && col - 1 >= 0 && initialBoard[row + direction][col - 1] && initialBoard[row + direction][col - 1].toLowerCase() !== piece.toLowerCase()) {
+          validMoves.push({ row: row + direction, col: col - 1 });
+        }
+        if (row + direction >= 0 && row + direction < 8 && col + 1 < 8 && initialBoard[row + direction][col + 1] && initialBoard[row + direction][col + 1].toLowerCase() !== piece.toLowerCase()) {
+          validMoves.push({ row: row + direction, col: col + 1 });
+        }
+        // En passant logic
+        if (enPassantTarget && enPassantTarget.row === row + direction && (enPassantTarget.col === col - 1 || enPassantTarget.col === col + 1)) {
+          validMoves.push({ row: row + direction, col: enPassantTarget.col });
+        }
+      }
+
+      // Rook logic (horizontal and vertical)
+      if (piece.toLowerCase() === 'r') {
+        // Check horizontal and vertical directions
+        const directions = [
+          { row: -1, col: 0 }, // Up
+          { row: 1, col: 0 }, // Down
+          { row: 0, col: -1 }, // Left
+          { row: 0, col: 1 }, // Right
+        ];
+        directions.forEach(direction => {
+          let r = row, c = col;
+          while (true) {
+            r += direction.row;
+            c += direction.col;
+            if (r < 0 || r >= 8 || c < 0 || c >= 8) break;
+            const target = initialBoard[r][c];
+            if (target === "") validMoves.push({ row: r, col: c });
+            else if (target.toLowerCase() !== piece.toLowerCase()) {
+              validMoves.push({ row: r, col: c });
+              break;
+            } else break;
+          }
+        });
+      }
+
+      // Knight logic (L-shaped moves)
+      if (piece.toLowerCase() === 'n') {
+        const knightMoves = [
+          { row: -2, col: -1 }, { row: -2, col: 1 },
+          { row: -1, col: -2 }, { row: -1, col: 2 },
+          { row: 1, col: -2 }, { row: 1, col: 2 },
+          { row: 2, col: -1 }, { row: 2, col: 1 }
+        ];
+        knightMoves.forEach(move => {
+          let r = row + move.row;
+          let c = col + move.col;
+          if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            const target = initialBoard[r][c];
+            if (!target || target.toLowerCase() !== piece.toLowerCase()) {
+              validMoves.push({ row: r, col: c });
+            }
+          }
+        });
+      }
+
+      // Bishop logic (diagonal moves)
+      if (piece.toLowerCase() === 'b') {
+        const directions = [
+          { row: -1, col: -1 }, // Top-left
+          { row: -1, col: 1 },  // Top-right
+          { row: 1, col: -1 },  // Bottom-left
+          { row: 1, col: 1 }    // Bottom-right
+        ];
+        directions.forEach(direction => {
+          let r = row, c = col;
+          while (true) {
+            r += direction.row;
+            c += direction.col;
+            if (r < 0 || r >= 8 || c < 0 || c >= 8) break;
+            const target = initialBoard[r][c];
+            if (target === "") validMoves.push({ row: r, col: c });
+            else if (target.toLowerCase() !== piece.toLowerCase()) {
+              validMoves.push({ row: r, col: c });
+              break;
+            } else break;
+          }
+        });
+      }
+
+      // Queen logic (combines Rook and Bishop)
+      if (piece.toLowerCase() === 'q') {
+        validMoves = validMoves.concat(getValidMoves('r', row, col)); // Rook-like moves
+        validMoves = validMoves.concat(getValidMoves('b', row, col)); // Bishop-like moves
+      }
+
+      // King logic (1 square in any direction)
+      if (piece.toLowerCase() === 'k') {
+        const kingMoves = [
+          { row: -1, col: 0 }, { row: 1, col: 0 },
+          { row: 0, col: -1 }, { row: 0, col: 1 },
+          { row: -1, col: -1 }, { row: -1, col: 1 },
+          { row: 1, col: -1 }, { row: 1, col: 1 }
+        ];
+        kingMoves.forEach(move => {
+          let r = row + move.row;
+          let c = col + move.col;
+          if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            const target = initialBoard[r][c];
+            if (!target || target.toLowerCase() !== piece.toLowerCase()) {
+              validMoves.push({ row: r, col: c });
+            }
+          }
+        });
+      }
+
+      return validMoves;
+    }
+
+    function handlePromotion(row, col) {
+      promotionDialog.style.display = "block";
+      promotionCallback = (choice) => {
+        const square = [...chessboard.children].find(
+          sq => sq.dataset.row == row && sq.dataset.col == col
+        );
+        const piece = square.querySelector('.piece');
+        piece.dataset.piece = choice;
+        piece.textContent = pieceSymbols[choice.toUpperCase()];
+        promotionDialog.style.display = "none";
+      };
+    }
+
+    function handleMove(row, col) {
+      const piece = selectedPiece.element;
+      initialBoard[selectedPiece.row][selectedPiece.col] = ""; // Empty the old square
+      initialBoard[row][col] = piece.dataset.piece.toLowerCase(); // Place piece on new square
+      moveHistory.push({ piece: piece.dataset.piece, from: { row: selectedPiece.row, col: selectedPiece.col }, to: { row, col } });
+      sendMove({ piece: piece.dataset.piece, from: { row: selectedPiece.row, col: selectedPiece.col }, to: { row, col } }); // Send move to server
+      createBoard();
+      currentTurn = currentTurn === 'white' ? 'black' : 'white';
+      selectedPiece = null;
+      updateStatus();
+    }
+
+    promotionDialog.addEventListener('click', (e) => {
+      if (e.target.classList.contains('promotion-option')) {
+        promotionCallback(e.target.dataset.piece);
+      }
+    });
+
+    chessboard.addEventListener('click', (event) => {
+      const square = event.target.classList.contains('square') ? event.target : event.target.parentElement;
+      const row = parseInt(square.dataset.row);
+      const col = parseInt(square.dataset.col);
+      const piece = square.querySelector('.piece');
+
+      if (selectedPiece) {
+        const validMoves = selectedPiece.validMoves || [];
+        if (validMoves.some(move => move.row === row && move.col === col)) {
+          if (selectedPiece.element.dataset.piece.toLowerCase() === 'p' &&
+              (row === 0 || row === 7)) {
+            handlePromotion(row, col);
+          }
+          handleMove(row, col);
+          return;
+        }
+      }
+
+      if (piece && piece.dataset.color === currentTurn) {
+        selectedPiece = { element: piece, row, col, validMoves: getValidMoves(piece.dataset.piece, row, col) };
+        clearHighlights();
+        selectedPiece.validMoves.forEach(move => {
+          const moveSquare = [...chessboard.children].find(
+            sq => sq.dataset.row == move.row && sq.dataset.col == move.col
+          );
+          moveSquare.classList.add('highlight');
+        });
+      }
+    });
+
+    createBoard();
+  </script>
+</body>
+    </html>
+  
